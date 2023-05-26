@@ -160,7 +160,7 @@ def main():
 
     sts = get_sts_session(args.profile)
 
-    problem_locations = get_problem_locations(sts, args.s3_locations)
+    problem_locations = get_problem_locations(sts, args.project, args.s3_locations)
 
     # run the ecs-config script
     configure_ecs(profile_args)

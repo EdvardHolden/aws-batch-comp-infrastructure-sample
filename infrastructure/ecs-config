@@ -31,15 +31,18 @@ class EcsService:
             logger.error(f"Failed to get ECS service names: {e}")
             raise e
 
-    def update_ecs_service(self, leader_node_count, worker_node_count):
+    def update_ecs_service(self, leader_node_count: int, worker_node_count: int):
         worker_service = self.get_ecs_service("SolverWorkerService")
         leader_service = self.get_ecs_service("SolverLeaderService")
         try:
+            logger.info("Updating Leader")
             ecs.update_service(
                 cluster="SatCompCluster",
                 service=leader_service,
                 desiredCount=leader_node_count,
             )
+
+            logger.info("Updating Worker")
             ecs.update_service(
                 cluster="SatCompCluster",
                 service=worker_service,
@@ -67,11 +70,9 @@ class ScalingGroup:
     def __init__(self, client) -> None:
         self.asg_client = client
 
-    def update_asg(self, desired_count: str):
+    def update_asg(self, desired_count: int):
         try:
-            response = self.asg_client.describe_auto_scaling_groups()[
-                "AutoScalingGroups"
-            ]
+            response = self.asg_client.describe_auto_scaling_groups()["AutoScalingGroups"]
             for group in response:
                 if "EcsInstanceAsg" in group["AutoScalingGroupName"]:
                     asg_name = group["AutoScalingGroupName"]
@@ -81,6 +82,7 @@ class ScalingGroup:
                 MaxSize=desired_count,
                 DesiredCapacity=desired_count,
             )
+            logger.info(f"Updated ASG. Response: {response}")
         except Exception as e:
             logger.error(f"Failed to update ASG: {e}")
             raise e
@@ -91,6 +93,7 @@ def await_completion(ecs_service, asg_client):
     start = time.time()
     while True:
         status = ecs_service.describe_ecs_services()
+        print(status)
 
         leader = status["services"][0]["deployments"][0]
         leader_desired = leader["desiredCount"]
@@ -104,12 +107,8 @@ def await_completion(ecs_service, asg_client):
 
         elapsed = time.time() - start
         print(f"Waiting for ECS ({elapsed/60.:3.1f} mins)")
-        print(
-            f"  leader: {leader_desired} desired, {leader_pending} pending, {leader_running} running"
-        )
-        print(
-            f" workers: {worker_desired} desired, {worker_pending} pending, {worker_running} running"
-        )
+        print(f"  leader: {leader_desired} desired, {leader_pending} pending, {leader_running} running")
+        print(f" workers: {worker_desired} desired, {worker_pending} pending, {worker_running} running")
         print("")
 
         if leader_desired == leader_running and worker_desired == worker_running:
@@ -137,22 +136,22 @@ def await_completion(ecs_service, asg_client):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "mode", choices=["setup", "shutdown"], help="AddInstances / DeleteInstances."
-    )
+    parser.add_argument("mode", choices=["setup", "shutdown"], help="AddInstances / DeleteInstances.")
     parser.add_argument("--profile", default=None, required=False, help="AWS profile")
-    parser.add_argument("--workers", required=False, help="Required Worker nodes count")
+    parser.add_argument(
+        "--workers", type=int, default="0", required=False, help="Required Worker nodes count"
+    )
 
     args = parser.parse_args()
 
     if args.mode == "setup":
         # Setup Instances
         worker_node_count = args.workers
-        leader_node_count = "1"
-        desired_count = str(int(worker_node_count) + 1)
+        leader_node_count = 1
+        desired_count = worker_node_count
     elif args.mode == "shutdown":
         # Shutdown instances
-        leader_node_count = worker_node_count = desired_count = "0"
+        leader_node_count = worker_node_count = desired_count = 0
 
     if args.profile:
         session = boto3.Session(profile_name=args.profile)
@@ -165,13 +164,16 @@ if __name__ == "__main__":
     asg_client = session.client("autoscaling")
     asg = ScalingGroup(asg_client)
 
-    asg.update_asg(int(desired_count))
+    asg.update_asg(desired_count)
     try:
-        ecs_service.update_ecs_service(int(leader_node_count), int(worker_node_count))
+        logger.info(
+            f"Updating ECS service leader count: {leader_node_count}, worker count {worker_node_count}"
+        )
+        ecs_service.update_ecs_service(leader_node_count, worker_node_count)
     except Exception as e:
         logger.info(f"Failed to update ECS service. {e}")
         logger.info("Updating ASG")
-        asg.update_asg("0")
+        asg.update_asg(0)
 
     # wait for ECS setup/teardown to complete
     await_completion(ecs_service, asg_client)
